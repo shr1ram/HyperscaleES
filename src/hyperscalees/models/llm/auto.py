@@ -54,12 +54,12 @@ models = {
     "7n0.4B": (rwkv7, GptTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv-7-pile", filename="RWKV-x070-Pile-421M-20241127-ctx4096.pth")), None),
     "7n1.5B": (rwkv7, GptTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv-7-pile", filename="RWKV-x070-Pile-1.47B-20241210-ctx4096.pth")), None),
 
-    "7g0.1B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1a-0.1b-20250728-ctx4096.pth")), None),
-    "7g0.4B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1-0.4b-20250324-ctx4096.pth")), None),
-    "7g1.5B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1-1.5b-20250429-ctx4096.pth")), None),
-    "7g2.9B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1-2.9b-20250519-ctx4096.pth")), None),
-    "7g7B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g0-7.2b-20250722-ctx4096.pth")), None),
-    "7g14B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g0a3-13.3b-20251031-ctx4096.pth")), None),
+    "7g0.1B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-0.1b-20260129-ctx8192.pth")), None),
+    "7g0.4B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-0.4b-20260210-ctx8192.pth")), None),
+    "7g1.5B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-1.5b-20260212-ctx8192.pth")), None),
+    "7g2.9B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-2.9b-20260131-ctx8192.pth")), None),
+    "7g7B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-7.2b-20260131-ctx8192.pth")), None),
+    "7g14B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-13.3b-20260131-ctx8192.pth")), None),
 
     # "6q7B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("recursal/QRWKV6-7B-Base", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),
     # "6q32B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("featherless-ai/QRWKV-QwQ-32B", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),
