@@ -6,10 +6,11 @@ from .base_noiser import Noiser
 from functools import partial
 
 
-def _init_lora_leaf(param):
-    """Initialize a LoRA leaf: zero matrix for 2D (MM_PARAM), scalar placeholder otherwise."""
+def _init_lora_leaf(param, key):
+    """Initialize a LoRA leaf: small random matrix for 2D (MM_PARAM), scalar placeholder otherwise."""
     if param.ndim == 2:
-        return jnp.zeros_like(param)
+        scale = 1e-4 / jnp.sqrt(max(param.shape))
+        return (jax.random.normal(key, param.shape, dtype=param.dtype) * scale)
     return jnp.zeros((), dtype=param.dtype)
 
 
@@ -68,14 +69,13 @@ def _noop_update(base_sigma, param, key, scores, iterinfo, frozen_noiser_params)
     return jnp.zeros_like(param)
 
 
-def _lora_svd_update(base_sigma, lora, key, scores, iterinfo, frozen_noiser_params):
-    """Update a LoRA adapter using SVD gradient in singular value space."""
+def _lora_svd_grad(base_sigma, lora, key, scores, iterinfo, frozen_noiser_params):
+    """Compute gradient for LoRA adapter projected back to parameter space."""
     r = min(frozen_noiser_params["rank"], min(lora.shape))
 
     # Compute SVD once for this LoRA adapter
     U, S, Vt = jnp.linalg.svd(lora, full_matrices=False)
     U_r = U[:, :r]    # (a, r)
-    S_r = S[:r]        # (r,)
     Vt_r = Vt[:r, :]  # (r, b)
 
     # Regenerate all epsilons for each population member: (N, r)
@@ -97,11 +97,8 @@ def _lora_svd_update(base_sigma, lora, key, scores, iterinfo, frozen_noiser_para
     broadcasted_scores = jnp.reshape(scores, (scores.shape[0], 1))  # (N, 1)
     grad_sigma = jnp.mean(broadcasted_scores * all_epsilons, axis=0)  # (r,)
 
-    # Update singular values: S_new = S - lr * grad (lr is handled by caller scaling)
-    S_new = S.at[:r].set(S_r - grad_sigma * jnp.sqrt(scores.size))
-
-    # Reconstruct full LoRA: U @ diag(S_new) @ Vt
-    return (U * S_new[None, :]) @ Vt
+    # Project gradient back to parameter space: U_r @ diag(grad_sigma) @ Vt_r
+    return (U_r * grad_sigma[None, :]) @ Vt_r  # (a, b)
 
 
 class Essa(Noiser):
@@ -118,12 +115,16 @@ class Essa(Noiser):
         true_solver = solver(lr, **solver_kwargs)
         opt_state = true_solver.init(params)
 
-        # Build LoRA pytree matching params structure
-        lora = jax.tree.map(_init_lora_leaf, params)
+        # Build LoRA pytree matching params structure (small random init for meaningful SVD basis)
+        leaves, treedef = jax.tree.flatten(params)
+        lora_keys = jax.random.split(jax.random.key(42), len(leaves))
+        lora_leaves = [_init_lora_leaf(leaf, lora_keys[i]) for i, leaf in enumerate(leaves)]
+        lora = jax.tree.unflatten(treedef, lora_leaves)
+        lora_opt_state = true_solver.init(lora)
 
         return (
             {"group_size": group_size, "freeze_nonlora": freeze_nonlora, "noise_reuse": noise_reuse, "solver": true_solver, "rank": rank},
-            {"sigma": sigma, "opt_state": opt_state, "lora": lora}
+            {"sigma": sigma, "opt_state": opt_state, "lora": lora, "lora_opt_state": lora_opt_state}
         )
 
     @classmethod
@@ -136,8 +137,6 @@ class Essa(Noiser):
         # Training: SVD the LoRA adapter, perturb singular values
         U_r, Vt_r, delta = get_svd_perturbation(frozen_noiser_params, noiser_params["sigma"], iterinfo, lora, base_key)
         # Effective forward: base + lora + perturbation
-        # lora contribution: x @ lora.T
-        # perturbation: x @ Vt_r.T @ diag(delta) @ U_r.T
         return base_ans + x @ lora.T + ((x @ Vt_r.T) * delta) @ U_r.T
 
     @classmethod
@@ -186,18 +185,19 @@ class Essa(Noiser):
         return -(new_grad * jnp.sqrt(fitnesses.size)).astype(param.dtype)
 
     @classmethod
-    def _do_lora_update(cls, lora, base_key, fitnesses, iterinfos, map_classification, sigma, frozen_noiser_params):
-        """Update LoRA adapter via SVD gradient. Only applies to MM_PARAM (map_classification == 1)."""
-        if map_classification != 1:
-            return lora  # non-MM params: return unchanged placeholder
+    def _do_lora_grad(cls, lora, base_key, fitnesses, iterinfos, map_classification, sigma, frozen_noiser_params):
+        """Compute gradient for LoRA adapter in parameter space. Only applies to MM_PARAM (map_classification == 1)."""
+        update_fn = [_noop_update, _lora_svd_grad, _noop_update, _noop_update][map_classification]
 
         if len(base_key.shape) == 0:
-            return _lora_svd_update(sigma, lora, base_key, fitnesses, iterinfos, frozen_noiser_params)
+            new_grad = update_fn(sigma, lora, base_key, fitnesses, iterinfos, frozen_noiser_params)
         else:
-            return jax.lax.scan(
-                lambda _, x: (0, _lora_svd_update(sigma, x[0], x[1], fitnesses, iterinfos, frozen_noiser_params)),
+            new_grad = jax.lax.scan(
+                lambda _, x: (0, update_fn(sigma, x[0], x[1], fitnesses, iterinfos, frozen_noiser_params)),
                 0, xs=(lora, base_key)
             )[1]
+
+        return -(new_grad * jnp.sqrt(fitnesses.size)).astype(lora.dtype)
 
     @classmethod
     def do_updates(cls, frozen_noiser_params, noiser_params, params, base_keys, fitnesses, iterinfos, es_map):
@@ -209,11 +209,12 @@ class Essa(Noiser):
         updates, noiser_params["opt_state"] = frozen_noiser_params["solver"].update(new_grad, noiser_params["opt_state"], params)
         new_params = optax.apply_updates(params, updates)
 
-        # 2. Update LoRA adapters directly (SVD-based, not through optax)
-        new_lora = jax.tree.map(
-            lambda l, k, m: cls._do_lora_update(l, k, fitnesses, iterinfos, m, noiser_params["sigma"], frozen_noiser_params),
+        # 2. Update LoRA adapters via optax (SVD gradient projected to parameter space)
+        lora_grad = jax.tree.map(
+            lambda l, k, m: cls._do_lora_grad(l, k, fitnesses, iterinfos, m, noiser_params["sigma"], frozen_noiser_params),
             noiser_params["lora"], base_keys, es_map
         )
-        noiser_params["lora"] = new_lora
+        lora_updates, noiser_params["lora_opt_state"] = frozen_noiser_params["solver"].update(lora_grad, noiser_params["lora_opt_state"], noiser_params["lora"])
+        noiser_params["lora"] = optax.apply_updates(noiser_params["lora"], lora_updates)
 
         return noiser_params, new_params
