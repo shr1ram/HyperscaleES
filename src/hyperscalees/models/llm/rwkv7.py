@@ -234,7 +234,7 @@ class BaseRWKV(LLM):
             params_i, es_tree_key_i, state, idx = inputs
             noiser_params = common_params.noiser_params
             if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
-                lora_i = jax.tree.map(lambda a: a[idx], noiser_params["lora"]["blocks"])
+                lora_i = jax.tree.map(lambda a: a[idx] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
                 noiser_params = {**noiser_params, "lora": lora_i}
             block_i = common_params._replace(
                 params=params_i,
@@ -337,7 +337,7 @@ class FastRWKV(BaseRWKV):
             idx = i
             noiser_params_i = noiser_params
             if has_lora_blocks:
-                lora_i = jax.tree.map(lambda a: a[i], noiser_params["lora"]["blocks"])
+                lora_i = jax.tree.map(lambda a: a[i] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
                 noiser_params_i = {**noiser_params, "lora": lora_i}
             block_i = common_params._replace(
                 params=params_i,
