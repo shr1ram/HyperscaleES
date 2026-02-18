@@ -29,10 +29,10 @@ def get_svd_perturbation(frozen_noiser_params, base_sigma, iterinfo, lora, key):
     true_thread_idx = thread_id // 2
     sigma = jnp.where(thread_id % 2 == 0, base_sigma, -base_sigma)
 
-    # Truncated SVD of the LoRA adapter
-    U, S, Vt = jnp.linalg.svd(lora, full_matrices=False)
-    U_r = U[:, :r]    # (a, r)
-    Vt_r = Vt[:r, :]  # (r, b)
+    # Truncated SVD of the LoRA adapter (cast to float32 since bfloat16 SVD is unsupported on some GPUs)
+    U, S, Vt = jnp.linalg.svd(lora.astype(jnp.float32), full_matrices=False)
+    U_r = U[:, :r].astype(lora.dtype)    # (a, r)
+    Vt_r = Vt[:r, :].astype(lora.dtype)  # (r, b)
 
     # Random perturbation in singular value space: only r scalars
     epsilon = jax.random.normal(
@@ -78,10 +78,10 @@ def _lora_svd_grad(base_sigma, lora, key, scores, iterinfo, frozen_noiser_params
     """Compute gradient for LoRA adapter projected back to parameter space."""
     r = min(frozen_noiser_params["rank"], min(lora.shape))
 
-    # Compute SVD once for this LoRA adapter
-    U, S, Vt = jnp.linalg.svd(lora, full_matrices=False)
-    U_r = U[:, :r]    # (a, r)
-    Vt_r = Vt[:r, :]  # (r, b)
+    # Compute SVD once for this LoRA adapter (cast to float32 since bfloat16 SVD is unsupported on some GPUs)
+    U, S, Vt = jnp.linalg.svd(lora.astype(jnp.float32), full_matrices=False)
+    U_r = U[:, :r].astype(lora.dtype)    # (a, r)
+    Vt_r = Vt[:r, :].astype(lora.dtype)  # (r, b)
 
     # Regenerate all epsilons for each population member: (N, r)
     def _get_epsilon(iterinfo_single):
