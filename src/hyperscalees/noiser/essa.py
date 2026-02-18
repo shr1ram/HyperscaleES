@@ -7,9 +7,14 @@ from functools import partial
 
 
 def _init_lora_leaf(param, key):
-    """Initialize a LoRA leaf: small random matrix for 2D (MM_PARAM), scalar placeholder otherwise."""
+    """Initialize a LoRA leaf: small random matrix for 2D (MM_PARAM), scalar placeholder otherwise.
+    For stacked params (3D with leading n_layer dim), creates stacked lora matrices."""
     if param.ndim == 2:
         scale = 1e-4 / jnp.sqrt(max(param.shape))
+        return (jax.random.normal(key, param.shape, dtype=param.dtype) * scale)
+    if param.ndim == 3:
+        # Stacked block param: (n_layer, a, b) -> stacked lora matrices
+        scale = 1e-4 / jnp.sqrt(max(param.shape[1:]))
         return (jax.random.normal(key, param.shape, dtype=param.dtype) * scale)
     return jnp.zeros((), dtype=param.dtype)
 
