@@ -236,9 +236,10 @@ class BaseRWKV(LLM):
                  policy=jax.checkpoint_policies.dots_with_no_batch_dims_saveable)
         def block_loop(x, inputs):
             hidden_states = x
-            params_i, es_tree_key_i, lora_i, state = inputs
+            params_i, es_tree_key_i, state, idx = inputs
             noiser_params = common_params.noiser_params
             if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
+                lora_i = jax.tree.map(lambda a: a[idx], noiser_params["lora"]["blocks"])
                 noiser_params = {**noiser_params, "lora": lora_i}
             block_i = common_params._replace(
                 params=params_i,
@@ -257,13 +258,7 @@ class BaseRWKV(LLM):
             hidden_states = residual + hidden_states
             return hidden_states, state
 
-        noiser_params = common_params.noiser_params
-        if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
-            lora_blocks = noiser_params["lora"]["blocks"]
-        else:
-            lora_blocks = jnp.zeros(n_layer)  # dummy; ignored inside block_loop
-
-        x, state = jax.lax.scan(block_loop, x, (common_params.params['blocks'], common_params.es_tree_key['blocks'], lora_blocks, state))
+        x, state = jax.lax.scan(block_loop, x, (common_params.params['blocks'], common_params.es_tree_key['blocks'], state, jnp.arange(n_layer)))
 
         return x, state
 
