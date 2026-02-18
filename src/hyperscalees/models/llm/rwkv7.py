@@ -231,10 +231,14 @@ class BaseRWKV(LLM):
                  policy=jax.checkpoint_policies.dots_with_no_batch_dims_saveable)
         def block_loop(y, inputs):
             x, v_first = y
-            params_i, es_tree_key_i, state, idx = inputs
+            params_i, es_tree_key_i, lora_i, state, idx = inputs
+            noiser_params = common_params.noiser_params
+            if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
+                noiser_params = {**noiser_params, "lora": lora_i}
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i
+                es_tree_key=es_tree_key_i,
+                noiser_params=noiser_params
             )
             x_new, s, v_first = call_submodule(TimeMixing, 'att', block_i,
                                                call_submodule(LayerNorm, 'ln1', block_i, x),
@@ -249,7 +253,13 @@ class BaseRWKV(LLM):
             x = x + x_new
             return (x, v_first), state
 
-        (x, _), state = jax.lax.scan(block_loop, (x, v_first), (common_params.params['blocks'], common_params.es_tree_key['blocks'], state, jnp.arange(n_layer)))
+        noiser_params = common_params.noiser_params
+        if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
+            lora_blocks = noiser_params["lora"]["blocks"]
+        else:
+            lora_blocks = jnp.zeros(n_layer)  # dummy; ignored inside block_loop
+
+        (x, _), state = jax.lax.scan(block_loop, (x, v_first), (common_params.params['blocks'], common_params.es_tree_key['blocks'], lora_blocks, state, jnp.arange(n_layer)))
         return x, state
 
 class ScanRWKV(BaseRWKV):
@@ -321,15 +331,23 @@ class FastRWKV(BaseRWKV):
         n_head, head_size = common_params.params['blocks']['att']['r_k'][0].shape
         x = call_submodule(LayerNorm, 'ln0', common_params, x)
 
+        noiser_params = common_params.noiser_params
+        has_lora_blocks = noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]
+
         v_first = x
         for i in range(n_layer):
             params_i = jax.tree.map(lambda a: a[i], common_params.params['blocks'])
             es_tree_key_i = jax.tree.map(lambda a: a[i], common_params.es_tree_key['blocks'])
             state_i = state[i]
             idx = i
+            noiser_params_i = noiser_params
+            if has_lora_blocks:
+                lora_i = jax.tree.map(lambda a: a[i], noiser_params["lora"]["blocks"])
+                noiser_params_i = {**noiser_params, "lora": lora_i}
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i
+                es_tree_key=es_tree_key_i,
+                noiser_params=noiser_params_i
             )
             x_new, s, v_first = call_submodule(TimeMixing, 'att', block_i,
                                                call_submodule(LayerNorm, 'ln1', block_i, x),
