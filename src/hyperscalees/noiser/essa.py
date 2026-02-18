@@ -19,25 +19,38 @@ def _init_lora_leaf(param, key):
     return jnp.zeros((), dtype=param.dtype)
 
 
-def get_svd_perturbation(frozen_noiser_params, base_sigma, iterinfo, lora, key):
-    """Compute SVD perturbation on the LoRA adapter matrix."""
+def _svd_leaf(lora, rank):
+    """Precompute truncated SVD for a single lora leaf."""
+    if lora.ndim < 2:
+        return (lora, lora)  # placeholder for non-matrix leaves
+    r = min(rank, min(lora.shape[-2:]))
+    U, S, Vt = jnp.linalg.svd(lora.astype(jnp.float32), full_matrices=False)
+    U_r = U[..., :, :r].astype(lora.dtype)
+    Vt_r = Vt[..., :r, :].astype(lora.dtype)
+    return (U_r, Vt_r)
+
+
+def precompute_lora_svd(frozen_noiser_params, noiser_params):
+    """Precompute SVD for all lora leaves. Call once per epoch before generation."""
+    rank = frozen_noiser_params["rank"]
+    lora_svd = jax.tree.map(lambda l: _svd_leaf(l, rank), noiser_params["lora"])
+    return {**noiser_params, "lora_svd": lora_svd}
+
+
+def get_svd_perturbation(frozen_noiser_params, base_sigma, iterinfo, U_r, Vt_r, key, dtype):
+    """Compute perturbation using precomputed SVD factors."""
     epoch, thread_id = iterinfo
-    r = min(frozen_noiser_params["rank"], min(lora.shape))
+    r = U_r.shape[-1]
 
     true_epoch = 0 if frozen_noiser_params["noise_reuse"] == 0 else epoch // frozen_noiser_params["noise_reuse"]
 
     true_thread_idx = thread_id // 2
     sigma = jnp.where(thread_id % 2 == 0, base_sigma, -base_sigma)
 
-    # Truncated SVD of the LoRA adapter (cast to float32 since bfloat16 SVD is unsupported on some GPUs)
-    U, S, Vt = jnp.linalg.svd(lora.astype(jnp.float32), full_matrices=False)
-    U_r = U[:, :r].astype(lora.dtype)    # (a, r)
-    Vt_r = Vt[:r, :].astype(lora.dtype)  # (r, b)
-
     # Random perturbation in singular value space: only r scalars
     epsilon = jax.random.normal(
         jax.random.fold_in(jax.random.fold_in(key, true_epoch), true_thread_idx),
-        (r,), dtype=lora.dtype
+        (r,), dtype=dtype
     )
 
     # delta = epsilon * sigma  (the perturbation to singular values)
@@ -127,10 +140,10 @@ class Essa(Noiser):
         lora = jax.tree.unflatten(treedef, lora_leaves)
         lora_opt_state = true_solver.init(lora)
 
-        return (
-            {"group_size": group_size, "freeze_nonlora": freeze_nonlora, "noise_reuse": noise_reuse, "solver": true_solver, "rank": rank},
-            {"sigma": sigma, "opt_state": opt_state, "lora": lora, "lora_opt_state": lora_opt_state}
-        )
+        frozen = {"group_size": group_size, "freeze_nonlora": freeze_nonlora, "noise_reuse": noise_reuse, "solver": true_solver, "rank": rank}
+        noiser_params = {"sigma": sigma, "opt_state": opt_state, "lora": lora, "lora_opt_state": lora_opt_state}
+        noiser_params = precompute_lora_svd(frozen, noiser_params)
+        return (frozen, noiser_params)
 
     @classmethod
     def do_mm(cls, frozen_noiser_params, noiser_params, param, base_key, iterinfo, x):
@@ -139,8 +152,9 @@ class Essa(Noiser):
         if iterinfo is None:
             # Eval: apply LoRA with no noise
             return base_ans + x @ lora.T
-        # Training: SVD the LoRA adapter, perturb singular values
-        U_r, Vt_r, delta = get_svd_perturbation(frozen_noiser_params, noiser_params["sigma"], iterinfo, lora, base_key)
+        # Training: use precomputed SVD factors
+        U_r, Vt_r = noiser_params["lora_svd"]
+        U_r, Vt_r, delta = get_svd_perturbation(frozen_noiser_params, noiser_params["sigma"], iterinfo, U_r, Vt_r, base_key, lora.dtype)
         # Effective forward: base + lora + perturbation
         return base_ans + x @ lora.T + ((x @ Vt_r.T) * delta) @ U_r.T
 
@@ -151,8 +165,9 @@ class Essa(Noiser):
         if iterinfo is None:
             # Eval: apply LoRA with no noise
             return base_ans + x @ lora
-        # Training: SVD the LoRA adapter, perturb singular values
-        U_r, Vt_r, delta = get_svd_perturbation(frozen_noiser_params, noiser_params["sigma"], iterinfo, lora, base_key)
+        # Training: use precomputed SVD factors
+        U_r, Vt_r = noiser_params["lora_svd"]
+        U_r, Vt_r, delta = get_svd_perturbation(frozen_noiser_params, noiser_params["sigma"], iterinfo, U_r, Vt_r, base_key, lora.dtype)
         # Transpose version: base + x @ lora + x @ U_r @ diag(delta) @ Vt_r
         return base_ans + x @ lora + ((x @ U_r) * delta) @ Vt_r
 
@@ -221,5 +236,8 @@ class Essa(Noiser):
         )
         lora_updates, noiser_params["lora_opt_state"] = frozen_noiser_params["solver"].update(lora_grad, noiser_params["lora_opt_state"], noiser_params["lora"])
         noiser_params["lora"] = optax.apply_updates(noiser_params["lora"], lora_updates)
+
+        # Recompute cached SVD after lora update
+        noiser_params = precompute_lora_svd(frozen_noiser_params, noiser_params)
 
         return noiser_params, new_params
