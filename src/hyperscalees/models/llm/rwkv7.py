@@ -232,17 +232,9 @@ class BaseRWKV(LLM):
         def block_loop(y, inputs):
             x, v_first = y
             params_i, es_tree_key_i, state, idx = inputs
-            noiser_params = common_params.noiser_params
-            if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
-                lora_i = jax.tree.map(lambda a: a[idx] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
-                updates = {"lora": lora_i}
-                if "lora_svd" in noiser_params and isinstance(noiser_params["lora_svd"], dict) and "blocks" in noiser_params["lora_svd"]:
-                    updates["lora_svd"] = jax.tree.map(lambda a: a[idx] if a.ndim > 0 else a, noiser_params["lora_svd"]["blocks"])
-                noiser_params = {**noiser_params, **updates}
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i,
-                noiser_params=noiser_params
+                es_tree_key=es_tree_key_i
             )
             x_new, s, v_first = call_submodule(TimeMixing, 'att', block_i,
                                                call_submodule(LayerNorm, 'ln1', block_i, x),
@@ -329,26 +321,15 @@ class FastRWKV(BaseRWKV):
         n_head, head_size = common_params.params['blocks']['att']['r_k'][0].shape
         x = call_submodule(LayerNorm, 'ln0', common_params, x)
 
-        noiser_params = common_params.noiser_params
-        has_lora_blocks = noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]
-
         v_first = x
         for i in range(n_layer):
             params_i = jax.tree.map(lambda a: a[i], common_params.params['blocks'])
             es_tree_key_i = jax.tree.map(lambda a: a[i], common_params.es_tree_key['blocks'])
             state_i = state[i]
             idx = i
-            noiser_params_i = noiser_params
-            if has_lora_blocks:
-                lora_i = jax.tree.map(lambda a: a[i] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
-                updates = {"lora": lora_i}
-                if "lora_svd" in noiser_params and isinstance(noiser_params["lora_svd"], dict) and "blocks" in noiser_params["lora_svd"]:
-                    updates["lora_svd"] = jax.tree.map(lambda a: a[i] if a.ndim > 0 else a, noiser_params["lora_svd"]["blocks"])
-                noiser_params_i = {**noiser_params, **updates}
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i,
-                noiser_params=noiser_params_i
+                es_tree_key=es_tree_key_i
             )
             x_new, s, v_first = call_submodule(TimeMixing, 'att', block_i,
                                                call_submodule(LayerNorm, 'ln1', block_i, x),

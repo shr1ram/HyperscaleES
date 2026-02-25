@@ -56,17 +56,10 @@ def merge_frozen(common, **kwargs):
     return common._replace(frozen_params=new_frozen_params)
 
 def call_submodule(cls, name, common_params, *args, **kwargs):
-    noiser_params = common_params.noiser_params
-    if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and name in noiser_params["lora"]:
-        updates = {"lora": noiser_params["lora"][name]}
-        if "lora_svd" in noiser_params and isinstance(noiser_params["lora_svd"], dict) and name in noiser_params["lora_svd"]:
-            updates["lora_svd"] = noiser_params["lora_svd"][name]
-        noiser_params = {**noiser_params, **updates}
     sub_common_params = common_params._replace(
         frozen_params=common_params.frozen_params[name] if common_params.frozen_params and name in common_params.frozen_params else None,
         params=common_params.params[name],
-        es_tree_key=common_params.es_tree_key[name],
-        noiser_params=noiser_params
+        es_tree_key=common_params.es_tree_key[name]
     )
     return cls._forward(sub_common_params, *args, **kwargs)
 

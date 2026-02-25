@@ -1,4 +1,4 @@
-from . import base_noiser, open_es, eggroll, alteggroll, sparse, eggroll_baseline_subtraction, essa
+from . import base_noiser, open_es, eggroll, alteggroll, sparse, eggroll_baseline_subtraction
 
 all_noisers = {
     "noop": base_noiser.Noiser,
@@ -7,6 +7,5 @@ all_noisers = {
     "eggrollbs": eggroll_baseline_subtraction.EggRollBS,
     "alteggroll": alteggroll.EggRoll,
     "reeggroll": eggroll.EggRoll,
-    "sparse": sparse.Sparse,
-    "essa": essa.Essa
+    "sparse": sparse.Sparse
 }

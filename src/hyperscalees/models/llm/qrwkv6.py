@@ -236,18 +236,10 @@ class BaseRWKV(LLM):
                  policy=jax.checkpoint_policies.dots_with_no_batch_dims_saveable)
         def block_loop(x, inputs):
             hidden_states = x
-            params_i, es_tree_key_i, state, idx = inputs
-            noiser_params = common_params.noiser_params
-            if noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]:
-                lora_i = jax.tree.map(lambda a: a[idx] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
-                updates = {"lora": lora_i}
-                if "lora_svd" in noiser_params and isinstance(noiser_params["lora_svd"], dict) and "blocks" in noiser_params["lora_svd"]:
-                    updates["lora_svd"] = jax.tree.map(lambda a: a[idx] if a.ndim > 0 else a, noiser_params["lora_svd"]["blocks"])
-                noiser_params = {**noiser_params, **updates}
+            params_i, es_tree_key_i, state = inputs
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i,
-                noiser_params=noiser_params
+                es_tree_key=es_tree_key_i
             )
 
             residual = hidden_states
@@ -261,7 +253,7 @@ class BaseRWKV(LLM):
             hidden_states = residual + hidden_states
             return hidden_states, state
 
-        x, state = jax.lax.scan(block_loop, x, (common_params.params['blocks'], common_params.es_tree_key['blocks'], state, jnp.arange(n_layer)))
+        x, state = jax.lax.scan(block_loop, x, (common_params.params['blocks'], common_params.es_tree_key['blocks'], state))
 
         return x, state
 
@@ -285,25 +277,15 @@ class FastRWKV(BaseRWKV):
         head_size = config["head_size"]
         n_head = n_embd // head_size
 
-        noiser_params = common_params.noiser_params
-        has_lora_blocks = noiser_params and "lora" in noiser_params and isinstance(noiser_params["lora"], dict) and "blocks" in noiser_params["lora"]
-
         for i in range(n_layer):
             hidden_states = x
+            # params_i, es_tree_key_i, state = inputs
             params_i = jax.tree.map(lambda a: a[i], common_params.params['blocks'])
             es_tree_key_i = jax.tree.map(lambda a: a[i], common_params.es_tree_key['blocks'])
             state_i = state[i]
-            noiser_params_i = noiser_params
-            if has_lora_blocks:
-                lora_i = jax.tree.map(lambda a: a[i] if a.ndim > 0 else a, noiser_params["lora"]["blocks"])
-                updates = {"lora": lora_i}
-                if "lora_svd" in noiser_params and isinstance(noiser_params["lora_svd"], dict) and "blocks" in noiser_params["lora_svd"]:
-                    updates["lora_svd"] = jax.tree.map(lambda a: a[i] if a.ndim > 0 else a, noiser_params["lora_svd"]["blocks"])
-                noiser_params_i = {**noiser_params, **updates}
             block_i = common_params._replace(
                 params=params_i,
-                es_tree_key=es_tree_key_i,
-                noiser_params=noiser_params_i
+                es_tree_key=es_tree_key_i
             )
 
             residual = hidden_states
