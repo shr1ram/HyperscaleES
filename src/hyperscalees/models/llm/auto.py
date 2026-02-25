@@ -1,7 +1,7 @@
-from .tokenizer import GptTokenizer, WorldTokenizer, QwenTokenizer
+from .tokenizer import GptTokenizer, WorldTokenizer, QwenTokenizer, TinyLlamaTokenizer
 
 # from . import rwkv4, rwkv5, rwkv5_2, rwkv6, rwkv7
-from . import rwkv7, qrwkv6
+from . import rwkv7, qrwkv6, tinyllama
 
 from huggingface_hub.constants import HF_HOME
 from huggingface_hub import hf_hub_download
@@ -23,7 +23,20 @@ versions = {
     # "5_2": rwkv5_2,
     # "6": rwkv6,
     "7": rwkv7,
-    "6q": qrwkv6
+    "6q": qrwkv6,
+    "llama": tinyllama,
+}
+
+BUCKET_SIZES = [256, 512, 1024, 2048]
+
+def get_bucket_size(generation_length):
+    for bucket in BUCKET_SIZES:
+        if generation_length <= bucket:
+            return bucket
+    return BUCKET_SIZES[-1]
+
+_default_model_class = {
+    "tl1.1B": "BaseTinyLlama",
 }
 
 models = {
@@ -63,6 +76,12 @@ models = {
 
     # "6q7B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("recursal/QRWKV6-7B-Base", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),
     # "6q32B": (qrwkv6, QwenTokenizer, (lambda : AutoModelForCausalLM.from_pretrained("featherless-ai/QRWKV-QwQ-32B", trust_remote_code=True, dtype="auto")), (lambda: {"head_size": 128})),
+
+    "tl1.1B": (tinyllama, TinyLlamaTokenizer,
+                (lambda: AutoModelForCausalLM.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0", torch_dtype="auto")),
+                (lambda: {"n_layer": 22, "n_heads": 32, "n_kv_heads": 4, "head_dim": 64,
+                          "hidden_size": 2048, "intermediate_size": 5632,
+                          "max_seq_len": 256, "rms_norm_eps": 1e-5, "rope_theta": 10000.0})),
 }
 
 # def get_rand_model(seed, version, n_layer, n_embd, vocab_size, config=None, dtype=None, rwkv_type="ScanRWKV", verbose=False):
@@ -94,6 +113,9 @@ models = {
 
 def get_model(model_name, dtype=None, rwkv_type="BaseRWKV", verbose=False, reload_cache=False):
     rwkv, tok_cls, model_name_fn, config_fn = models[model_name]
+    # Use default model class if available and caller didn't override
+    if rwkv_type == "BaseRWKV" and model_name in _default_model_class:
+        rwkv_type = _default_model_class[model_name]
     RWKV = getattr(rwkv, rwkv_type)
     rwkv_tokenizer = tok_cls()
 

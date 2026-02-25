@@ -143,7 +143,10 @@ print("per-device generations is", args.parallel_generations_per_gpu)
 print("full number of generations is", args.total_parallel_generations)
 
 RWKV, full_params, tokenizer = get_model(args.model_choice, rwkv_type=args.rwkv_type, verbose=True, dtype=args.dtype)
-legacy_tokenizer = LegacyWorldTokenizer() if args.model_choice[0] == "7" else tokenizer
+if args.model_choice.startswith("7"):
+    legacy_tokenizer = LegacyWorldTokenizer()
+else:
+    legacy_tokenizer = tokenizer
 
 config, params, scan_map, es_map = full_params
 

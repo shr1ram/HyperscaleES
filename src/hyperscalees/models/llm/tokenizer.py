@@ -143,3 +143,15 @@ class QwenTokenizer(BaseTokenizer):
 
     def decode(self, tokens):
         return self.tok.decode(tokens)
+
+
+class TinyLlamaTokenizer(BaseTokenizer):
+
+    def __init__(self):
+        self.tok = AutoTokenizer.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0")
+
+    def encode(self, src):
+        return self.tok.encode(src)
+
+    def decode(self, tokens):
+        return self.tok.decode(tokens)
