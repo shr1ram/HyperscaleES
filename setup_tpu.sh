@@ -25,12 +25,15 @@ pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_relea
 echo ">>> Cloning HyperscaleES..."
 mkdir -p ~/SNLP
 cd ~/SNLP
+BRANCH="${1:-warming-up}"
 if [ -d "HyperscaleES" ]; then
     echo "    Repo already exists, pulling latest..."
     cd HyperscaleES
-    git pull
+    git fetch --all
+    git checkout "$BRANCH"
+    git pull origin "$BRANCH"
 else
-    git clone https://github.com/shr1ram/HyperscaleES.git
+    git clone -b "$BRANCH" https://github.com/shr1ram/HyperscaleES.git
     cd HyperscaleES
 fi
 
