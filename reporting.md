@@ -361,10 +361,11 @@ Key questions to answer:
 - Tests: parameter shapes, forward pass, KV cache tracking, HuggingFace numerical match, EGGROLL noiser init + update.
 
 ### Phase 2: QASPER task
-- Add `QASPERTrain` / `QASPERTest` task classes to `llm_bandits.py`.
-- Flatten dataset, construct prompts with truncated paper context.
-- Implement token-F1 fitness scoring.
-- Establish Experiment 1 baselines: zero-shot F1 and EGGROLL-only F1 (truncated context, bucket=2048, batch=128).
+- Add `QASPERTrain` / `QASPERValidation` task classes to `llm_bandits.py` using LongBench QASPER (THUDM/LongBench).
+- Exact token-count filtering (no truncation) — only papers whose full prompt fits within the bucket are included.
+- Token-F1 fitness scoring against LongBench gold answers.
+- **TinyLlama 1.1B is incompatible with QASPER** — native context is 2048 tokens, but zero QASPER examples fit at that length. At 4096 (RoPE extrapolation), the model produces gibberish.
+- **TODO:** Rerun a short QASPER baseline (3 epochs) with Llama 3.2 1B, which has 128K native context and should handle QASPER's ~3K-5.5K token papers without extrapolation issues.
 
 ### Phase 3: NAMM on frozen TinyLlama
 - Port NAMM's BAM network (~4K params) to JAX.
