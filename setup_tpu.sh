@@ -16,8 +16,9 @@ if ! command -v claude &> /dev/null; then
     npm install -g @anthropic-ai/claude-code
 fi
 
-# 2. Install JAX for TPU
-echo ">>> Installing JAX for TPU..."
+# 2. Upgrade pip/setuptools and install JAX for TPU
+echo ">>> Upgrading pip and installing JAX for TPU..."
+pip install --upgrade pip setuptools
 pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # 3. Clone repo
