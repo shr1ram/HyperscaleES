@@ -1,7 +1,7 @@
 # TPU VM Quick Setup
 
 ```bash
-curl -sL "https://raw.githubusercontent.com/shr1ram/HyperscaleES/warming-up/setup_tpu.sh?$(date +%s)" | bash
+curl -sL -H "Accept: application/vnd.github.v3.raw" "https://api.github.com/repos/shr1ram/HyperscaleES/contents/setup_tpu.sh?ref=warming-up" | bash
 ```
 
-The `?$(date +%s)` busts the GitHub CDN cache so you always get the latest version.
+Uses the GitHub API (no CDN caching) to always fetch the latest version.

@@ -11,3 +11,4 @@ pretrain/fp8/cached_files/
 pretrain/cached_files/
 logs/
 *.pdf
+.env

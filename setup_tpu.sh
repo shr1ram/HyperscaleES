@@ -58,15 +58,22 @@ python3 -m pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/l
 echo ">>> Installing HyperscaleES and dependencies..."
 python3 -m pip install -e .
 
-# 7. Verify TPU
+# 7. wandb login
+if [ -n "$WANDB_API_KEY" ]; then
+    echo ">>> Logging into wandb..."
+    python3 -m wandb login "$WANDB_API_KEY"
+else
+    echo ">>> Skipping wandb login (set WANDB_API_KEY to auto-login)"
+fi
+
+# 8. Verify TPU
 echo ">>> Verifying TPU devices..."
 python3 -c "import jax; devs = jax.devices(); print(f'Found {len(devs)} TPU devices: {devs}')"
 
-# 8. Done
+# 9. Done
 echo ""
 echo "=== Setup complete! ==="
-echo "Run 'wandb login' if you haven't already."
-echo "Then activate the venv and start training:"
+echo "Activate the venv and start training:"
 echo "  source ~/SNLP/HyperscaleES/.venv/bin/activate"
 echo "  cd ~/SNLP/HyperscaleES"
 echo "  python -m llm_experiments.general_do_evolution --model_choice tl1.1B --task fastzero --num_epochs 3 --parallel_generations_per_gpu 256 --sigma 1e-3 --lr_scale 1.0 --noiser eggroll --track --wandb_project HyperscaleExp --wandb_name tpu_test"
