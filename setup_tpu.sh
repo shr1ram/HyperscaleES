@@ -18,8 +18,8 @@ fi
 
 # 2. Upgrade pip/setuptools and install JAX for TPU
 echo ">>> Upgrading pip and installing JAX for TPU..."
-pip install --upgrade pip setuptools
-pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+python3 -m pip install --upgrade pip setuptools
+python3 -m pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # 3. Clone repo
 echo ">>> Cloning HyperscaleES..."
@@ -39,7 +39,7 @@ fi
 
 # 3. Install package + dependencies
 echo ">>> Installing HyperscaleES and dependencies..."
-pip install -e .
+python3 -m pip install -e .
 
 # 4. Verify TPU
 echo ">>> Verifying TPU devices..."
