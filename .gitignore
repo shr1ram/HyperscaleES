@@ -4,6 +4,8 @@ hyperscalees.egg-info
 wandb/
 slurm_scripts/outputs/
 outputs/
+runs/
+train.log
 .venv/
 pretrain/fp8/cached_files/
 pretrain/cached_files/

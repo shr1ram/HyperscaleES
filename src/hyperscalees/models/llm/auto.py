@@ -27,7 +27,7 @@ versions = {
     "llama": tinyllama,
 }
 
-BUCKET_SIZES = [256, 512, 1024, 2048]
+BUCKET_SIZES = [256, 512, 1024, 2048, 4096]
 
 def get_bucket_size(generation_length):
     for bucket in BUCKET_SIZES:

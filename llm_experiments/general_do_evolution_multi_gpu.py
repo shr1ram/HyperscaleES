@@ -53,7 +53,7 @@ import operator
 class Args:
     seed: int = 0
     model_choice: str =  "7g0.1B"
-    output_directory: Optional[str] = "."
+    output_directory: Optional[str] = "runs"
     wandb_directory: Optional[str] = "."
 
     save_model: bool = True

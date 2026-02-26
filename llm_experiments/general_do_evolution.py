@@ -53,7 +53,7 @@ import wandb
 class Args:
     seed: int = 0
     model_choice: Literal[tuple(models.keys())] =  "7g0.1B"
-    output_directory: Optional[str] = "."
+    output_directory: Optional[str] = "runs"
     wandb_directory: Optional[str] = "."
 
     rwkv_type: str = "BaseRWKV"
@@ -87,6 +87,8 @@ class Args:
     track: bool = False
 
     generations_per_prompt: int = 8
+
+    max_seq_len: Optional[int] = None
 
     coord_addr: Optional[str] = None
     num_procs: Optional[int] = None
@@ -150,6 +152,10 @@ else:
 
 config, params, scan_map, es_map = full_params
 
+if args.max_seq_len is not None:
+    config['max_seq_len'] = args.max_seq_len
+    config = RWKV.transform_config(config)
+
 args.prompts_per_epoch = args.total_parallel_generations // args.generations_per_prompt
 
 Task = all_tasks[args.task](tokenizer, legacy_tokenizer, args.generation_length)
@@ -181,8 +187,8 @@ print(generate_batch.memory_analysis())
 
 validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)
 
-def _do_update(noiser_params, params, raw_scores, epoch_num):
-    iterinfos = (jnp.full(raw_scores.size, epoch_num, dtype=jnp.int32), global_indices)
+def _do_update(noiser_params, params, raw_scores, epoch_num, thread_indices):
+    iterinfos = (jnp.full(raw_scores.size, epoch_num, dtype=jnp.int32), thread_indices)
 
     fitnesses = NOISER.convert_fitnesses(frozen_noiser_params, noiser_params, raw_scores)
     noiser_params, new_params = NOISER.do_updates(frozen_noiser_params, noiser_params, params, base_evo_keys, fitnesses, iterinfos, es_map)
@@ -196,9 +202,9 @@ start_time = time.time()
 do_update = jax.jit(shard_map(
     _do_update,
     mesh=mesh,
-    in_specs=(P(), P(), P(), P()),
+    in_specs=(P(), P(), P(), P(), P()),
     out_specs=(P(), P(), P())
-), donate_argnums=(0, 1)).lower(noiser_params, params, jnp.zeros(args.total_parallel_generations), 0).compile()
+), donate_argnums=(0, 1)).lower(noiser_params, params, jnp.zeros(args.total_parallel_generations), 0, global_indices).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(do_update.memory_analysis())
@@ -304,7 +310,7 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
     start_time = time.time()
     if epoch == 0:
         print("updating params")
-    noiser_params, params, parameter_differences = jax.block_until_ready(do_update(noiser_params, params, output_scores, epoch))
+    noiser_params, params, parameter_differences = jax.block_until_ready(do_update(noiser_params, params, output_scores, epoch, global_indices))
     parameter_update_time = time.time() - start_time
 
     # print("CURRENT MEMORY start of stats", jax.local_devices()[0].memory_stats())

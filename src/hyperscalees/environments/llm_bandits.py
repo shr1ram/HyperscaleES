@@ -492,6 +492,175 @@ def _make_rg_validation_class(dataset_name: str):
 
 
 # ----------------------------
+# QASPER helpers
+# ----------------------------
+import json
+import tarfile
+import urllib.request
+from pathlib import Path as _Path
+
+_QASPER_TRAIN_DEV_URL = "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-train-dev-v0.3.tgz"
+_QASPER_TEST_URL = "https://qasper-dataset.s3.us-west-2.amazonaws.com/qasper-test-and-evaluator-v0.3.tgz"
+_QASPER_FILES = {
+    "train": ("qasper-train-v0.3.json", _QASPER_TRAIN_DEV_URL),
+    "validation": ("qasper-dev-v0.3.json", _QASPER_TRAIN_DEV_URL),
+    "test": ("qasper-test-v0.3.json", _QASPER_TEST_URL),
+}
+
+
+def _load_qasper_raw(split):
+    """Download and cache raw QASPER JSON, return list of paper dicts."""
+    from huggingface_hub.constants import HF_HOME
+    cache_dir = _Path(HF_HOME) / "qasper_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    json_name, url = _QASPER_FILES[split]
+    json_path = cache_dir / json_name
+
+    if not json_path.exists():
+        tgz_path = cache_dir / url.rsplit("/", 1)[-1]
+        if not tgz_path.exists():
+            print(f"Downloading QASPER from {url}")
+            urllib.request.urlretrieve(url, tgz_path)
+        with tarfile.open(tgz_path, "r:gz") as tar:
+            tar.extractall(cache_dir, filter="data")
+
+    with open(json_path) as f:
+        data = json.load(f)
+    return list(data.values())
+
+
+def token_f1(prediction, gold):
+    """Word-level F1 between two strings."""
+    pred_tokens = prediction.lower().split()
+    gold_tokens = gold.lower().split()
+    if not pred_tokens or not gold_tokens:
+        return 0.0
+    common = set(pred_tokens) & set(gold_tokens)
+    if not common:
+        return 0.0
+    precision = sum(1 for t in pred_tokens if t in common) / len(pred_tokens)
+    recall = sum(1 for t in gold_tokens if t in common) / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def _flatten_qasper(papers):
+    """Flatten raw QASPER JSON (list of paper dicts) into flat QA list."""
+    flat = []
+    for paper in papers:
+        title = paper["title"]
+        abstract = paper["abstract"]
+        full_text = paper["full_text"]
+
+        for qa in paper["qas"]:
+            question = qa["question"]
+            gold_answers = []
+            for ans_entry in qa["answers"]:
+                ans = ans_entry["answer"]
+                if ans.get("unanswerable", False):
+                    continue
+                if ans.get("yes_no") is not None:
+                    gold_answers.append("yes" if ans["yes_no"] else "no")
+                elif ans.get("free_form_answer", "").strip():
+                    gold_answers.append(ans["free_form_answer"].strip())
+                elif ans.get("extractive_spans"):
+                    gold_answers.append(" ".join(ans["extractive_spans"]))
+            if not gold_answers:
+                continue
+            flat.append({
+                "title": title,
+                "abstract": abstract,
+                "full_text": full_text,
+                "question": question,
+                "gold_answers": gold_answers,
+            })
+    return flat
+
+
+def _build_qasper_prompt(entry, tokenizer, max_prompt_tokens):
+    """Build a prompt from a QASPER entry, truncating body to fit token budget."""
+    header = (
+        "User: Read the following paper and answer the question.\n\n"
+        f"Title: {entry['title']}\n"
+        f"Abstract: {entry['abstract']}\n\n"
+    )
+    footer = f"\nQuestion: {entry['question']}\nAssistant: <think"
+
+    header_tokens = len(tokenizer.encode(header))
+    footer_tokens = len(tokenizer.encode(footer))
+    body_budget = max_prompt_tokens - header_tokens - footer_tokens
+
+    # Raw JSON: full_text is a list of {section_name, paragraphs} dicts
+    body_parts = []
+    for section in entry["full_text"]:
+        body_parts.append(f"## {section['section_name']}")
+        body_parts.extend(section["paragraphs"])
+
+    body = "\n".join(body_parts)
+
+    if body_budget > 0:
+        body_tokens = tokenizer.encode(body)
+        if len(body_tokens) > body_budget:
+            body = tokenizer.decode(body_tokens[:body_budget])
+    else:
+        body = ""
+
+    return header + body + footer
+
+
+# ----------------------------
+# QASPER tasks
+# ----------------------------
+class QASPERTrain(BanditTask):
+    def __init__(self, encoding_tokenizer, decoding_tokenizer, max_num_steps):
+        super().__init__(encoding_tokenizer, decoding_tokenizer, max_num_steps)
+        self.answer_budget = 128
+        self.max_prompt_tokens = max_num_steps - self.answer_budget
+        raw = _load_qasper_raw("train")
+        self.dataset = _flatten_qasper(raw)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def get_input(self, indices):
+        return jnp.array([
+            get_padded_prompt(
+                self.encoding_tokenizer.encode(
+                    _build_qasper_prompt(
+                        self.dataset[i.item() % len(self.dataset)],
+                        self.encoding_tokenizer,
+                        self.max_prompt_tokens,
+                    )
+                ),
+                self.max_num_steps,
+            )
+            for i in indices
+        ])
+
+    def get_batch_fitness(self, indices, full_generations):
+        np_full = np.array(full_generations)
+        L = len(self.dataset)
+        rewards = []
+        for j, seq in enumerate(np_full):
+            gen = safe_decode(seq, self.decoding_tokenizer)
+            gen = strip_thoughts(gen).strip()
+            entry = self.dataset[indices[j].item() % L]
+            if not gen:
+                rewards.append(0.0)
+            else:
+                score = max(token_f1(gen, gold) for gold in entry["gold_answers"])
+                rewards.append(score)
+        return jnp.array(rewards, dtype=jnp.float32)
+
+
+class QASPERValidation(QASPERTrain):
+    def __init__(self, encoding_tokenizer, decoding_tokenizer, max_num_steps):
+        super().__init__(encoding_tokenizer, decoding_tokenizer, max_num_steps)
+        raw = _load_qasper_raw("validation")
+        self.dataset = _flatten_qasper(raw)
+
+
+# ----------------------------
 # Registry
 # ----------------------------
 all_tasks = {
@@ -504,6 +673,7 @@ all_tasks = {
     "countdownn": CountdownNTrainRG,
     "aime24": AIMETrainAIME,
     "aime25": AIMETrainAIME,
+    "qasper": QASPERTrain,
 }
 
 validation_tasks = {
@@ -516,6 +686,7 @@ validation_tasks = {
     "countdownn": CountdownNValRG,
     "aime24": AIME24Test,
     "aime25": AIME25Test,
+    "qasper": QASPERValidation,
 }
 
 for _name in RG_DATASETS:
