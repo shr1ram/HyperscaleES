@@ -186,33 +186,48 @@ This oscillation can prevent convergence to a stable equilibrium. Mitigations:
 - **Periodic NAMM re-training**: run several NAMM CMA-ES generations after every N EGGROLL epochs.
 - **Alternating freeze**: alternate between freezing NAMM (EGGROLL-only epochs) and freezing LoRA (NAMM-only epochs). This guarantees each optimizer faces a stationary target during its update.
 
-### 4.3 Different optimizer scales
+### 4.3 Unified optimizer: EGGROLL for both LoRA and NAMM
 
-| Property | EGGROLL (LoRA) | CMA-ES (NAMM BAM) |
-|----------|---------------|-------------------|
-| Parameters | ~789,000 | ~4,000 |
-| Population size | 256-1024 | 32 |
-| Optimizer | EGGROLL (rank-1 ES + SGD) | CMA-ES (full covariance) |
-| Per-generation cost | Full model forward pass | Feature extraction + tiny classifier |
-| Sigma schedule | Fixed or slow decay | Adaptive (CMA-ES self-tunes) |
+The original NAMM paper uses CMA-ES for the ~4,000 BAM parameters, while EGGROLL handles the ~789,000 LoRA parameters. Running two separate optimizers creates coordination complexity: different population sizes, update frequencies, sigma schedules, and an alternating freeze schedule to avoid the moving target problem (Section 4.2).
 
-CMA-ES maintains a full covariance matrix of size O(d^2). At 4,000 params this is 16M entries — feasible. At 789,000 params this would be 622 billion entries — impossible. So we cannot use a single optimizer for both. The two optimizers must run with different population sizes, update frequencies, and sigma schedules while sharing a fitness signal.
+**The simpler approach: use EGGROLL for everything.**
 
-### 4.4 Per-thread attention divergence
+EGGROLL already supports two perturbation types via its `es_map`:
+- **`MM_PARAM`** — rank-1 outer product perturbations for large weight matrices (LoRA). Memory-efficient: O(r(a+b)) instead of O(ab).
+- **`PARAM`** — standard Gaussian perturbation for small parameters (layernorms, biases, etc.). Full noise vectors.
 
-NAMM's input features come from attention matrices. During EGGROLL training, each population member has different LoRA noise, producing different attention patterns. This creates a choice:
+NAMM's BAM network is ~4,000 parameters — small enough for full Gaussian perturbation. By adding the BAM parameters to the EGGROLL parameter tree and marking them as `PARAM` in the es_map, both the model's LoRA weights and the eviction policy are perturbed and evaluated together in a single population.
 
-- **Per-thread NAMM** (faithful): extract attention features and run BAM for each population member independently. Expensive — it means running the STFT + BAM pipeline 256+ times per eviction cycle. But eviction decisions are tailored to each member's actual attention.
-- **Shared NAMM** (approximate): run NAMM on the base (unperturbed) model's attention patterns and apply the same eviction mask to all threads. Cheap, but eviction decisions may be suboptimal for perturbed models. However, since sigma is small (1e-3), attention patterns across the population are similar.
-- **Sampled NAMM** (compromise): run per-thread NAMM on a small subsample of the population (e.g., 8 threads), average the eviction masks, and apply to all. Balances cost and accuracy.
+Each population member gets:
+- A perturbed model (rank-1 LoRA noise on attention/MLP weight matrices)
+- A perturbed eviction policy (full Gaussian noise on BAM parameters)
+- Generates text under cache compression using its own perturbed eviction policy
+- Receives one fitness score reflecting the quality of both
 
-The shared approach is the practical starting point. As LoRA updates accumulate and the model drifts from its initialization, per-thread NAMM may become necessary.
+**Advantages over two-optimizer approach:**
+- Single population, single fitness evaluation — no coordination overhead
+- No alternating freeze schedules — both components are always being optimized
+- No moving target problem — model and eviction policy are perturbed together, so each population member is self-consistent
+- Credit assignment happens naturally — fitness-weighted aggregation pushes both LoRA and BAM params in directions that improve joint performance
+- Simpler implementation — no CMA-ES code needed, just register BAM params in the existing tree
+
+**The tradeoff:** CMA-ES maintains a full covariance matrix, which is very sample-efficient for low-dimensional problems (pop_size=32 works well for 4K params). Standard ES with fitness-weighted updates is less sample-efficient per generation. However, with population sizes of 256-1024 (feasible on TPU), the ES gradient estimate is high quality even without covariance adaptation. CMA-ES's advantage matters at pop_size=32; at pop_size=1024, it is marginal.
+
+**If sample efficiency becomes an issue**, a fallback is to run CMA-ES for BAM params separately with a smaller population, using the same fitness signal but updating at a different cadence. This is the alternating approach from Section 4.2. But unified EGGROLL should be tried first as it is simpler and avoids co-evolution instability entirely.
+
+### 4.4 Per-thread eviction is natural under unified EGGROLL
+
+With unified EGGROLL, each population member already has its own perturbed BAM parameters. This means per-thread eviction comes for free — each member runs the eviction policy with its own BAM noise, producing eviction decisions tailored to its own perturbed attention patterns. There is no need for a "shared NAMM" approximation.
+
+The cost is running the STFT + BAM pipeline once per thread per eviction cycle. But BAM is tiny (~4K params, single attention head + MLP), and the STFT is a fixed transform with no learned parameters. At 256-1024 threads this is negligible compared to the LLM forward pass cost.
 
 ### 4.5 Fitness signal is entangled
 
 In standalone NAMM training, fitness measures "model performance with this eviction policy vs without." In standalone EGGROLL, fitness measures "model performance with this LoRA perturbation." In joint training, the fitness is a single number reflecting both contributions simultaneously.
 
-A bad LoRA perturbation paired with a good eviction policy produces the same low fitness as a good perturbation with bad eviction. Neither optimizer can distinguish its own contribution. This is inherent to the joint optimization and is unlikely to be solved without additional signal decomposition (e.g., running some evaluations without NAMM as a control).
+A bad LoRA perturbation paired with a good eviction policy produces the same low fitness as a good perturbation with bad eviction. The optimizer cannot distinguish each component's contribution. This is inherent to the joint optimization but is mitigated by the unified approach — since both components are perturbed independently within each population member, the fitness-weighted aggregation will separately push LoRA and BAM params in beneficial directions, analogous to how ES estimates partial derivatives through random perturbation.
+
+Ablation experiments (EGGROLL-only, eviction-only, joint) remain necessary to measure each component's independent contribution.
 
 ### 4.6 Static shape constraints in JAX
 
@@ -302,18 +317,18 @@ Establish independent baselines to measure the improvement from co-training:
 
 | Condition | What we measure |
 |-----------|----------------|
-| **TinyLlama, no NAMM, no EGGROLL** | Base model QASPER F1 (zero-shot) |
-| **TinyLlama + EGGROLL, no NAMM** | F1 after LoRA fine-tuning (full KV cache, truncated context) |
-| **TinyLlama + NAMM, no EGGROLL** | F1 with learned eviction (frozen model, CMA-ES for BAM only) |
+| **Base model, no NAMM, no EGGROLL** | Base model QASPER F1 (zero-shot) |
+| **EGGROLL-only, no NAMM** | F1 after LoRA fine-tuning (full KV cache, truncated context) |
+| **NAMM-only, no EGGROLL** | F1 with learned eviction (frozen model, EGGROLL for BAM params only with frozen LoRA) |
 
 These three numbers define the landscape. EGGROLL-only tells us how much LoRA helps on the task. NAMM-only tells us how well eviction works on a frozen model. The joint system should improve on NAMM-only (the primary claim) and ideally on EGGROLL-only as well.
 
-### Experiment 2: Joint training
+### Experiment 2: Joint training (unified EGGROLL)
 
-Run EGGROLL and CMA-ES together with shared fitness:
+Run unified EGGROLL with both LoRA weights and BAM eviction parameters in a single population:
 
-- **Alternating schedule**: N EGGROLL epochs (frozen NAMM), then M CMA-ES generations (frozen LoRA), repeat.
-- **Shared NAMM**: use base model attention patterns for eviction (approximate, cheap).
+- **Unified optimization**: BAM params registered as `PARAM` in the es_map, LoRA weights as `MM_PARAM`. Both perturbed and updated together.
+- **Per-thread eviction**: each population member uses its own perturbed BAM to make eviction decisions on its own perturbed attention patterns.
 - **Metric**: QASPER F1 under cache compression, compared to NAMM-only baseline.
 
 Key questions to answer:
@@ -325,8 +340,7 @@ Key questions to answer:
 
 | Ablation | Question |
 |----------|----------|
-| Joint training vs alternating | Does simultaneous optimization outperform alternating? |
-| Shared vs per-thread NAMM | Does per-thread eviction improve fitness at the cost of compute? |
+| Unified EGGROLL vs alternating CMA-ES/EGGROLL | Does single-optimizer co-training match or beat two-optimizer alternating? |
 | LoRA rank 1 vs 2 vs 4 | Does higher rank help the model adapt its attention patterns? |
 | Eviction rate sweep | At what compression rate does joint training diverge from NAMM-only? |
 | Sigma schedule | Does slower sigma decay help co-training stability? |
@@ -543,6 +557,85 @@ Spot TPU VMs receive a 30-second warning before preemption. No guaranteed minimu
 ### The binding constraint
 
 The 30-day TPU clock is now the primary constraint — not memory, not compute, not model size. Every day spent on infrastructure is a day not spent on the core experiment. Prioritize getting the co-training loop running on TPU within the first week.
+
+---
+
+## 10. evo-memory Codebase Analysis and Integration Strategy
+
+### evo-memory overview
+
+The [evo-memory](https://github.com/SakanaAI/evo-memory) repository is the official NAMM implementation from SakanaAI. It is a **pure PyTorch** codebase built around HuggingFace Transformers, Hydra configs, and `torchrun` distributed training. A `tiny_llama_implementation` branch adapts it for TinyLlama 1.1B on a single GPU.
+
+### Core algorithmic components
+
+The NAMM implementation has three small, well-defined algorithmic components surrounded by ~2000+ lines of PyTorch plumbing:
+
+**1. STFT feature extraction** (`memory_policy/deep_embedding_spectogram.py`, ~100 lines of logic)
+
+Takes attention weight matrices, transposes so each cached token has a time series of "how much was I attended to by recent queries," runs `torch.stft` to extract frequency features, reduces via EMA. Parameters:
+- n_fft=32, hop_length=16, Hann window
+- Output magnitudes only (not complex)
+- EMA coefficient: 0.99
+- Output shape: `[batch, heads, tokens, 17]` (17 = n_fft/2 + 1)
+
+**2. BAM scoring network** (`memory_policy/deep_scoring_bam.py` + `stateless_parallel_modules/attention.py`, ~200 lines)
+
+A single self-attention head with **backward causal masking** — each token attends to tokens that are newer than itself, creating competition where older tokens must justify retention against newer arrivals. Followed by an MLP producing a scalar score per token. Key details:
+- Hidden dim: 32, 1 attention head
+- Backward causal mask (lower triangular masked out)
+- RoPE positional encoding
+- MLP: embedding_dim → 1 (scalar score)
+- Parameters are "stateless" — passed in from CMA-ES, not stored as nn.Module weights
+- Total: ~4,000 parameters
+
+**3. CMA-ES optimizer** (`memory_evolution/cma_es.py`)
+
+Standard CMA-ES with:
+- Population size: 32
+- Elite ratio: 0.5
+- Init sigma: 0.065
+- Rank-one + rank-mu covariance updates
+- Adaptive step-size control
+
+### Framework incompatibility: PyTorch vs JAX
+
+evo-memory is 100% PyTorch. HyperscaleES is 100% JAX. These cannot be bridged in a shared forward pass — you cannot `jax.vmap` a PyTorch module, and JAX arrays cannot flow through PyTorch's autograd graph. The two frameworks have fundamentally different compilation and execution models.
+
+### Integration strategy: rewrite algorithms in JAX, use evo-memory as reference spec
+
+**What to port (small, ~80-100 lines of JAX):**
+- STFT: `jax.numpy.fft.rfft` replaces `torch.stft`. ~30 lines.
+- BAM: Single attention head + MLP with backward masking. HyperscaleES already has attention implementations in `tinyllama.py`. ~50 lines.
+- CMA-ES: Standard algorithm, ~100 lines. Or use an existing JAX library like `evosax`.
+
+**What NOT to port (large, unnecessary):**
+- `memory_llms/` wrapper layer — HyperscaleES already has its own model loading and forward pass
+- `stateless_parallel_modules/` framework — EGGROLL already handles parameter passing the same way (params as function arguments, not stored state)
+- Hydra config system — HyperscaleES uses tyro
+- `DynamicCache` integration — needs logical masking in `jax.lax.scan`, a completely different approach
+- Evaluation harness — HyperscaleES has its own task/fitness framework
+
+**What to reference from evo-memory (architecture and hyperparameter spec):**
+- STFT params: n_fft=32, hop_length=16, Hann window, magnitude output, EMA coeff=0.99
+- BAM architecture: hidden_dim=32, 1 head, backward causal masking, RoPE, then MLP → scalar
+- CMA-ES hyperparams: pop_size=32, elite_ratio=0.5, init_sigma=0.065
+- Eviction frequency: every 512 new tokens
+- Training curriculum: 3-stage schedule across tasks
+
+### What needs to be added to HyperscaleES
+
+Building on the existing codebase:
+
+1. **Attention weight extraction** — modify `LlamaAttention._forward` in `tinyllama.py` to optionally return attention weights alongside the output
+2. **STFT + BAM in JAX** — pure functions operating on attention weight arrays
+3. **CMA-ES for NAMM params** — separate optimizer from EGGROLL, runs on the ~4,000 BAM parameters
+4. **Logical masking** — a validity mask in the KV cache that the eviction policy updates (static shapes preserved for `jax.lax.scan`)
+5. **Chunked generation** — break the scan into 512-token segments with eviction between chunks
+6. **Alternating training loop** — orchestrate EGGROLL epochs and CMA-ES generations with shared fitness
+
+### Conclusion
+
+The evo-memory repo is the **specification**, not the starting point. The algorithms are small and portable; the infrastructure is not. HyperscaleES already provides the model, optimizer, and training loop — the eviction policy slots in as a new component.
 
 ---
 
