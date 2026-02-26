@@ -26,11 +26,13 @@ if ! python3.11 --version &> /dev/null; then
 fi
 
 # 3. Create venv with Python 3.11
-if [ ! -d "$HOME/venv" ]; then
+VENV_DIR="$HOME/SNLP/HyperscaleES/.venv"
+if [ ! -d "$VENV_DIR" ]; then
     echo ">>> Creating Python 3.11 venv..."
-    python3.11 -m venv "$HOME/venv"
+    mkdir -p "$HOME/SNLP"
+    python3.11 -m venv "$VENV_DIR"
 fi
-source "$HOME/venv/bin/activate"
+source "$VENV_DIR/bin/activate"
 
 # 4. Upgrade pip/setuptools and install JAX for TPU
 echo ">>> Upgrading pip and installing JAX for TPU..."
