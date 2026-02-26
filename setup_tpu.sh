@@ -16,7 +16,23 @@ if ! command -v claude &> /dev/null; then
     npm install -g @anthropic-ai/claude-code
 fi
 
-# 2. Upgrade pip/setuptools and install JAX for TPU
+# 2. Install Python 3.11 if not available
+if ! python3.11 --version &> /dev/null; then
+    echo ">>> Installing Python 3.11..."
+    sudo apt update -y
+    sudo apt install -y software-properties-common
+    sudo add-apt-repository -y ppa:deadsnakes/ppa
+    sudo apt install -y python3.11 python3.11-venv python3.11-dev
+fi
+
+# 3. Create venv with Python 3.11
+if [ ! -d "$HOME/venv" ]; then
+    echo ">>> Creating Python 3.11 venv..."
+    python3.11 -m venv "$HOME/venv"
+fi
+source "$HOME/venv/bin/activate"
+
+# 4. Upgrade pip/setuptools and install JAX for TPU
 echo ">>> Upgrading pip and installing JAX for TPU..."
 python3 -m pip install --upgrade pip setuptools
 python3 -m pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
