@@ -95,6 +95,7 @@ class BanditTask:
 class ToyTask(BanditTask):
     def __init__(self, encoding_tokenizer, decoding_tokenizer, max_num_steps, single_fitness):
         super().__init__(encoding_tokenizer, decoding_tokenizer, max_num_steps)
+        self._single_fitness = single_fitness
         self._batch_fitness = jax.jit(jax.vmap(single_fitness))
 
     def __len__(self):
@@ -105,7 +106,12 @@ class ToyTask(BanditTask):
 
     def get_batch_fitness(self, indices, full_generations):
         # skip the first token (0) for scoring
-        return self._batch_fitness(full_generations[:, 1:])
+        tokens = full_generations[:, 1:]
+        # If inputs are numpy arrays (e.g. from validation), compute per-sample
+        # to avoid mesh/sharding issues with the JIT'd vmap on multi-device setups
+        if isinstance(tokens, np.ndarray):
+            return jnp.array([self._single_fitness(jnp.array(tokens[i])) for i in range(tokens.shape[0])])
+        return self._batch_fitness(tokens)
 
 
 class FastZero(ToyTask):

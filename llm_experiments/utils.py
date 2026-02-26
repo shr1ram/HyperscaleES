@@ -123,7 +123,8 @@ def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key,
             unique_prompts = validation_task.get_input(unique_indices)
 
             output_batch = jax.block_until_ready(generate_batch(noiser_params, params, unique_prompts, unique_indices, epoch))
-            fitnesses = jax.device_put(validation_task.get_batch_fitness(jax.device_put(unique_indices, jax.local_devices(backend='cpu')[0]), jax.device_put(output_batch, jax.local_devices(backend='cpu')[0])), output_batch.device)
+            # Use numpy arrays to avoid TPU mesh/sharding issues in fitness computation
+            fitnesses = jnp.asarray(validation_task.get_batch_fitness(np.asarray(unique_indices), np.asarray(output_batch)))
 
             sum_scores += jnp.sum(fitnesses)
         
