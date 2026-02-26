@@ -111,12 +111,12 @@ models = {
 
 #     return RWKV, rwkv_params, config
 
-def get_model(model_name, dtype=None, rwkv_type="BaseRWKV", verbose=False, reload_cache=False):
+def get_model(model_name, dtype=None, model_class="BaseRWKV", verbose=False, reload_cache=False):
     rwkv, tok_cls, model_name_fn, config_fn = models[model_name]
     # Use default model class if available and caller didn't override
-    if rwkv_type == "BaseRWKV" and model_name in _default_model_class:
-        rwkv_type = _default_model_class[model_name]
-    RWKV = getattr(rwkv, rwkv_type)
+    if model_class == "BaseRWKV" and model_name in _default_model_class:
+        model_class = _default_model_class[model_name]
+    RWKV = getattr(rwkv, model_class)
     rwkv_tokenizer = tok_cls()
 
     if dtype is None:

@@ -50,7 +50,7 @@ class Args:
     model_choice: Literal[tuple(models.keys())] =  "7g0.1B"
     wandb_directory: Optional[str] = "."
 
-    rwkv_type: str = "AssociativeScanRWKV"
+    model_class: str = "AssociativeScanRWKV"
     dtype: Optional[str] = None
 
     parallel_generations_per_gpu: int = 128
@@ -129,7 +129,7 @@ print()
 print("per-device generations is", args.parallel_generations_per_gpu)
 print("full number of generations is", args.total_parallel_generations)
 
-RWKV, full_params, tokenizer = get_model(args.model_choice, rwkv_type=args.rwkv_type, verbose=True, dtype=args.dtype)
+RWKV, full_params, tokenizer = get_model(args.model_choice, model_class=args.model_class, verbose=True, dtype=args.dtype)
 legacy_tokenizer = LegacyWorldTokenizer() if args.model_choice[0] == "7" else tokenizer
 
 config, params, scan_map, es_map = full_params

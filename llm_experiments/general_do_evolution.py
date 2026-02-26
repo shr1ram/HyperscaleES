@@ -56,7 +56,7 @@ class Args:
     output_directory: Optional[str] = "runs"
     wandb_directory: Optional[str] = "."
 
-    rwkv_type: str = "BaseRWKV"
+    model_class: str = "BaseRWKV"
     dtype: Optional[str] = None
 
     parallel_generations_per_gpu: int = 1024
@@ -144,7 +144,7 @@ print()
 print("per-device generations is", args.parallel_generations_per_gpu)
 print("full number of generations is", args.total_parallel_generations)
 
-RWKV, full_params, tokenizer = get_model(args.model_choice, rwkv_type=args.rwkv_type, verbose=True, dtype=args.dtype)
+RWKV, full_params, tokenizer = get_model(args.model_choice, model_class=args.model_class, verbose=True, dtype=args.dtype)
 if args.model_choice.startswith("7"):
     legacy_tokenizer = LegacyWorldTokenizer()
 else:
