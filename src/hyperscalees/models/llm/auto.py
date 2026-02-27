@@ -1,6 +1,6 @@
-from .tokenizer import GptTokenizer, WorldTokenizer, TinyLlamaTokenizer
+from .tokenizer import GptTokenizer, WorldTokenizer, TinyLlamaTokenizer, Llama32Tokenizer
 
-from . import rwkv7, tinyllama
+from . import rwkv7, llama
 
 from huggingface_hub.constants import HF_HOME
 from huggingface_hub import hf_hub_download
@@ -18,6 +18,7 @@ suffix = ".model"
 
 _default_model_class = {
     "tl1.1B": "BaseTinyLlama",
+    "l3.2-1B": "BaseTinyLlama",
 }
 
 models = {
@@ -37,11 +38,17 @@ models = {
     "7g7B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-7.2b-20260131-ctx8192.pth")), None),
     "7g14B": (rwkv7, WorldTokenizer, (lambda : hf_hub_download(repo_id="BlinkDL/rwkv7-g1", filename="rwkv7-g1d-13.3b-20260131-ctx8192.pth")), None),
 
-    "tl1.1B": (tinyllama, TinyLlamaTokenizer,
+    "tl1.1B": (llama, TinyLlamaTokenizer,
                 (lambda: AutoModelForCausalLM.from_pretrained("TinyLlama/TinyLlama-1.1B-Chat-v1.0", torch_dtype="auto")),
                 (lambda: {"n_layer": 22, "n_heads": 32, "n_kv_heads": 4, "head_dim": 64,
                           "hidden_size": 2048, "intermediate_size": 5632,
                           "max_seq_len": 256, "rms_norm_eps": 1e-5, "rope_theta": 10000.0})),
+
+    "l3.2-1B": (llama, Llama32Tokenizer,
+                (lambda: AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B", torch_dtype="auto")),
+                (lambda: {"n_layer": 16, "n_heads": 32, "n_kv_heads": 8, "head_dim": 64,
+                          "hidden_size": 2048, "intermediate_size": 8192,
+                          "max_seq_len": 256, "rms_norm_eps": 1e-5, "rope_theta": 500000.0})),
 }
 
 def get_model(model_name, dtype=None, model_class="BaseRWKV", verbose=False, reload_cache=False):

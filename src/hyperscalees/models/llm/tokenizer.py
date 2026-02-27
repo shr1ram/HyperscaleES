@@ -155,3 +155,15 @@ class TinyLlamaTokenizer(BaseTokenizer):
 
     def decode(self, tokens):
         return self.tok.decode(tokens)
+
+
+class Llama32Tokenizer(BaseTokenizer):
+
+    def __init__(self):
+        self.tok = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B")
+
+    def encode(self, src):
+        return self.tok.encode(src)
+
+    def decode(self, tokens):
+        return self.tok.decode(tokens)

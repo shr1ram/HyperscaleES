@@ -1,1 +1,1 @@
-from . import llm, rwkv7, tinyllama, auto
+from . import llm, rwkv7, llama, auto
