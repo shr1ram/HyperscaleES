@@ -325,17 +325,14 @@ def validate(noiser_params, params, epoch):
     noiser_params_val["sigma"] = jnp.asarray(0.0, dtype=jnp.float32)
 
     for i in range(args.validation_iterations):
-        # Per-iteration indices shaped/sharded exactly like the compile contract
-        val_unique_indices = jax.device_put(
-            replicate_matrix(jnp.arange(args.total_validation_generations)),
-            NamedSharding(mesh, P('data'))
-        ) + i * args.total_validation_generations
+        # Per-iteration indices as plain numpy, then shard
+        val_idx_np = np.arange(args.total_validation_generations) + i * args.total_validation_generations
+        val_unique_indices = jax.device_put(val_idx_np, NamedSharding(mesh, P('data')))
 
-        # Build prompts per-shard to preserve sharding and avoid host OOM
-        val_unique_prompts = jax.make_array_from_single_device_arrays(
-            (args.total_validation_generations, args.generation_length),
-            NamedSharding(mesh, P('data')),
-            [ValTask.get_input(shard.data) for shard in val_unique_indices.addressable_shards]
+        # Build prompts on host from full indices, then shard
+        val_unique_prompts = jax.device_put(
+            ValTask.get_input(val_idx_np),
+            NamedSharding(mesh, P('data'))
         )
 
         # Generate on devices
@@ -376,9 +373,10 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         validation_score = None
     # print("CURRENT MEMORY start of epoch", jax.local_devices()[0].memory_stats())
     start_time = time.time()
-    unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch
+    idx_np = np.arange(args.prompts_per_epoch) + epoch * args.prompts_per_epoch
+    unique_indices = jax.device_put(idx_np, NamedSharding(mesh, P('data')))
     indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])
+    unique_prompts = jax.device_put(Task.get_input(idx_np), NamedSharding(mesh, P('data')))
     # Task.get_input(unique_indices)
     batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
     prompt_processing_time = time.time() - start_time

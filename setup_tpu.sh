@@ -58,19 +58,35 @@ python3 -m pip install jax[tpu] -f https://storage.googleapis.com/jax-releases/l
 echo ">>> Installing HyperscaleES and dependencies..."
 python3 -m pip install -e .
 
-# 7. wandb login
-if [ -n "$WANDB_API_KEY" ]; then
-    echo ">>> Logging into wandb..."
-    python3 -m wandb login "$WANDB_API_KEY"
-else
-    echo ">>> Skipping wandb login (set WANDB_API_KEY to auto-login)"
+# 7. Load .env if present (provides HF_TOKEN / WANDB_API_KEY as defaults)
+if [ -f ".env" ]; then
+    echo ">>> Found .env — loading environment variables..."
+    set -a; source .env; set +a
 fi
 
-# 8. Verify TPU
+# 8. HuggingFace login (manual — paste token when prompted)
+if python3 -c "from huggingface_hub import HfFolder; assert HfFolder.get_token()" 2>/dev/null; then
+    echo ">>> HuggingFace: already logged in."
+else
+    echo ">>> HuggingFace login required (paste your token below)."
+    echo "    Get a token at: https://huggingface.co/settings/tokens"
+    python3 -c "from huggingface_hub import login; login()"
+fi
+
+# 9. wandb login (manual — paste token when prompted)
+if python3 -c "import wandb; assert wandb.api.api_key" 2>/dev/null; then
+    echo ">>> wandb: already logged in."
+else
+    echo ">>> wandb login required (paste your API key below)."
+    echo "    Get a key at: https://wandb.ai/authorize"
+    python3 -m wandb login
+fi
+
+# 10. Verify TPU
 echo ">>> Verifying TPU devices..."
 python3 -c "import jax; devs = jax.devices(); print(f'Found {len(devs)} TPU devices: {devs}')"
 
-# 9. Done
+# 11. Done
 echo ""
 echo "=== Setup complete! ==="
 echo "Activate the venv and start training:"

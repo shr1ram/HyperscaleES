@@ -180,12 +180,12 @@ generate_batch = jax.jit(shard_map(
     mesh=mesh,
     in_specs=(P(), P(), P('data'), P('data'), P()),
     out_specs=P('data')
-)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32')), all_thread_idxes, 0).compile()
+)).lower(noiser_params, params, jax.ShapeDtypeStruct((args.total_parallel_generations, args.generation_length), jnp.dtype('int32'), sharding=NamedSharding(mesh, P('data'))), all_thread_idxes, 0).compile()
 print("Compile time", time.time() - start_time)
 print("memory info")
 print(generate_batch.memory_analysis())
 
-validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature)
+validate = build_validate(RWKV, config, params, base_evo_keys, base_valid_key, tokenizer, legacy_tokenizer, args, args.temperature, mesh=mesh)
 
 def _do_update(noiser_params, params, raw_scores, epoch_num, thread_indices):
     iterinfos = (jnp.full(raw_scores.size, epoch_num, dtype=jnp.int32), thread_indices)
@@ -245,10 +245,10 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         validation_score = None
     # print("CURRENT MEMORY start of epoch", jax.local_devices()[0].memory_stats())
     start_time = time.time()
-    unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch
+    unique_indices_np = np.arange(args.prompts_per_epoch) + epoch * args.prompts_per_epoch
+    unique_indices = jax.device_put(unique_indices_np, NamedSharding(mesh, P('data')))
     indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])
-    # Task.get_input(unique_indices)
+    unique_prompts = jax.device_put(Task.get_input(unique_indices_np), NamedSharding(mesh, P('data')))
     batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
     prompt_processing_time = time.time() - start_time
 

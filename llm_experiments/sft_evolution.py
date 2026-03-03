@@ -182,10 +182,11 @@ params = jax.tree.map(replicate_matrix, params)
 frozen_noiser_params, noiser_params = NOISER.init_noiser(params, args.sigma, args.lr_scale, group_size=args.generations_per_prompt, freeze_nonlora=args.freeze_nonlora, noise_reuse=args.sub_sequence_length, rank=args.rank)
 base_evo_keys = simple_es_tree_key(params, base_model_key, scan_map)
 
+# Replicated (P()) copy — captured as a closure constant inside _do_update's shard_map
 global_indices = replicate_matrix(np.arange(args.total_parallel_generations)) % args.generations_per_prompt
-global_val_indices = replicate_matrix(np.arange(args.total_validation_generations))
-all_thread_idxes = jax.device_put(global_indices, NamedSharding(mesh, P('data')))
-all_thread_val_idxes = jax.device_put(global_val_indices, NamedSharding(mesh, P('data')))
+# Data-sharded (P('data')) copy — passed as a function argument to generate_sft_batch
+all_thread_idxes = jax.device_put(np.arange(args.total_parallel_generations) % args.generations_per_prompt, NamedSharding(mesh, P('data')))
+all_thread_val_idxes = jax.device_put(np.arange(args.total_validation_generations), NamedSharding(mesh, P('data')))
 
 _generate_thread = build_generate_sft_thread(RWKV, NOISER, frozen_noiser_params, config, base_evo_keys, base_gen_key, args.temperature)
 
@@ -319,15 +320,12 @@ def validate(noiser_params, params, epoch):
 
     for i in range(args.validation_iterations):
 
-        val_unique_indices = jax.device_put(
-            replicate_matrix(jnp.arange(args.total_validation_generations)),
-            NamedSharding(mesh, P('data'))
-        ) + i * args.total_validation_generations
+        val_indices_np = np.arange(args.total_validation_generations) + i * args.total_validation_generations
+        val_unique_indices = jax.device_put(val_indices_np, NamedSharding(mesh, P('data')))
 
-        val_unique_prompts = jax.make_array_from_single_device_arrays(
-            (args.total_validation_generations, args.generation_length),
-            NamedSharding(mesh, P('data')),
-            [ValTask.get_input(shard.data) for shard in val_unique_indices.addressable_shards]
+        val_unique_prompts = jax.device_put(
+            ValTask.get_input(val_indices_np),
+            NamedSharding(mesh, P('data'))
         )
 
         val_outputs = jax.block_until_ready(
@@ -390,9 +388,10 @@ def single_epoch(noiser_params, params, true_train_fitness_sum, epoch):
         validation_score = None
 
     start_time = time.time()
-    unique_indices = jax.device_put(replicate_matrix(jnp.arange(args.prompts_per_epoch)), NamedSharding(mesh, P('data'))) + epoch * args.prompts_per_epoch
+    indices_np = np.arange(args.prompts_per_epoch) + epoch * args.prompts_per_epoch
+    unique_indices = jax.device_put(indices_np, NamedSharding(mesh, P('data')))
     indices = jnp.repeat(unique_indices, args.generations_per_prompt, axis=0)
-    unique_prompts = jax.make_array_from_single_device_arrays((args.prompts_per_epoch, args.generation_length), NamedSharding(mesh, P('data')), [Task.get_input(shard.data) for shard in unique_indices.addressable_shards])
+    unique_prompts = jax.device_put(Task.get_input(indices_np), NamedSharding(mesh, P('data')))
     batch_prompts = jnp.repeat(unique_prompts, args.generations_per_prompt, axis=0)
 
     # Mask all tokens except leading one at each subsequence start

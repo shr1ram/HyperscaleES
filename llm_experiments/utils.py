@@ -28,7 +28,7 @@ def safe_decode(tokens, tokenizer):
     except BaseException as e:
         return ""
 
-def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0):
+def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature=1.0, use_shard_map=True):
 
     def forward_and_sample(noiser_params, params, input_token, input_state, generation_key, iterinfo):
         print("compiling forward and sample")
@@ -52,8 +52,12 @@ def build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_
             tok, state, gen_key = forward_and_sample(noiser_params, params, true_input, state, gen_key, iterinfo)
             return (tok, state, gen_key), true_input
 
-        init_token = jax.lax.pvary(0, 'data')
-        init_state = jax.lax.pvary(MODEL.default_state(params, config), 'data')
+        if use_shard_map:
+            init_token = jax.lax.pvary(0, 'data')
+            init_state = jax.lax.pvary(MODEL.default_state(params, config), 'data')
+        else:
+            init_token = 0
+            init_state = MODEL.default_state(params, config)
 
         _, out_tokens = jax.lax.scan(inner_scan, (init_token, init_state, start_gen_key), prompt)
         return out_tokens
@@ -98,7 +102,9 @@ def build_generate_sft_thread(MODEL, NOISER, frozen_noiser_params, config, base_
     return generate_thread
 
 
-def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key, tokenizer, legacy_tokenizer, args, temperature=1.0, use_validation_set=True, NOISER=hs.noiser.base_noiser.Noiser, sigma=0.0):
+def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key, tokenizer, legacy_tokenizer, args, temperature=1.0, use_validation_set=True, NOISER=hs.noiser.base_noiser.Noiser, sigma=0.0, mesh=None):
+    from jax.experimental.shard_map import shard_map
+
     frozen_noiser_params, noiser_params = NOISER.init_noiser(params_example, sigma, 0.0)
 
     if use_validation_set:
@@ -106,28 +112,57 @@ def build_validate(MODEL, config, params_example, base_evo_keys, master_gen_key,
     else:
         validation_task = all_tasks[args.task](tokenizer, legacy_tokenizer, args.generation_length)
 
-    _generate_thread = build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature)
+    use_sharded = mesh is not None
+    _generate_thread = build_generate_thread(MODEL, NOISER, frozen_noiser_params, config, base_evo_keys, master_gen_key, temperature, use_shard_map=use_sharded)
 
     print("Compiling generate validation batch")
     start_time = time.time()
-    generate_batch = jax.jit(jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None))).lower(noiser_params, params_example, jax.ShapeDtypeStruct((args.parallel_validations, args.generation_length), jnp.dtype('int32')), jnp.arange(args.parallel_validations), 0).compile()
+
+    if use_sharded:
+        num_devices = len(jax.devices())
+        total_validations = args.parallel_validations * num_devices
+
+        val_thread_idxes = jax.device_put(
+            jnp.arange(total_validations),
+            NamedSharding(mesh, P('data'))
+        )
+
+        generate_batch = jax.jit(shard_map(
+            jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None)),
+            mesh=mesh,
+            in_specs=(P(), P(), P('data'), P('data'), P()),
+            out_specs=P('data')
+        )).lower(
+            noiser_params, params_example,
+            jax.ShapeDtypeStruct((total_validations, args.generation_length), jnp.dtype('int32'), sharding=NamedSharding(mesh, P('data'))),
+            val_thread_idxes, 0
+        ).compile()
+    else:
+        total_validations = args.parallel_validations
+        generate_batch = jax.jit(jax.vmap(_generate_thread, in_axes=(None, None, 0, 0, None))).lower(noiser_params, params_example, jax.ShapeDtypeStruct((args.parallel_validations, args.generation_length), jnp.dtype('int32')), jnp.arange(args.parallel_validations), 0).compile()
+
     print("Compile time", time.time() - start_time)
     print("memory info")
     print(generate_batch.memory_analysis())
-    
+
     def validate(params, epoch):
         sum_scores = 0.0
 
         for i in tqdm.trange(args.validation_iterations):
-            unique_indices = jnp.arange(args.parallel_validations) + (i * args.parallel_validations)
-            unique_prompts = validation_task.get_input(unique_indices)
+            unique_indices_np = np.arange(total_validations) + (i * total_validations)
 
-            output_batch = jax.block_until_ready(generate_batch(noiser_params, params, unique_prompts, unique_indices, epoch))
+            if use_sharded:
+                unique_prompts = jax.device_put(validation_task.get_input(unique_indices_np), NamedSharding(mesh, P('data')))
+                unique_indices_sharded = jax.device_put(unique_indices_np, NamedSharding(mesh, P('data')))
+                output_batch = jax.block_until_ready(generate_batch(noiser_params, params, unique_prompts, unique_indices_sharded, epoch))
+            else:
+                unique_prompts = validation_task.get_input(unique_indices_np)
+                output_batch = jax.block_until_ready(generate_batch(noiser_params, params, unique_prompts, unique_indices_np, epoch))
+
             # Use numpy arrays to avoid TPU mesh/sharding issues in fitness computation
-            fitnesses = jnp.asarray(validation_task.get_batch_fitness(np.asarray(unique_indices), np.asarray(output_batch)))
-
+            fitnesses = jnp.asarray(validation_task.get_batch_fitness(np.asarray(unique_indices_np), np.asarray(output_batch)))
             sum_scores += jnp.sum(fitnesses)
-        
-        return sum_scores / (args.parallel_validations * args.validation_iterations)
-    
+
+        return sum_scores / (total_validations * args.validation_iterations)
+
     return validate
